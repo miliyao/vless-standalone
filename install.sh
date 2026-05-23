@@ -96,14 +96,12 @@ detect_arch() {
 }
 
 get_public_ip() {
-    log_info "正在检测服务器公网 IP 地址..." >&2
-    local ip=""
-    ip=$(curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || \
-         curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || \
-         curl -sS --max-time 5 https://ipinfo.io/ip 2>/dev/null || \
-         curl -sS --max-time 5 https://icanhazip.com 2>/dev/null || \
-         echo "YOUR_VPS_IP")
-    echo "$ip"
+    log_info "正在检测服务器公网 IP 地址..."
+    SERVER_IP=$(curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || \
+                curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || \
+                curl -sS --max-time 5 https://ipinfo.io/ip 2>/dev/null || \
+                curl -sS --max-time 5 https://icanhazip.com 2>/dev/null || \
+                echo "YOUR_VPS_IP")
 }
 
 generate_secrets() {
@@ -360,7 +358,7 @@ main() {
     write_service
     enable_bbr
 
-    SERVER_IP=$(get_public_ip)
+    get_public_ip
 
     # 构造标准 vless 分享链接
     local vless_link=""
