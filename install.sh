@@ -173,14 +173,14 @@ install_binary() {
     log_info "地址: ${download_url}"
 
     local tmp_bin="${INSTALL_DIR}/${SERVICE_NAME}.tmp"
-    if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp_bin" "$download_url"; then
+    if ! curl -H "Cache-Control: no-cache" -fL --retry 3 --connect-timeout 15 -o "$tmp_bin" "$download_url"; then
         log_error "从 GitHub 下载预编译包失败，请检查网络或版本号。"
         exit 1
     fi
 
     log_info "正在下载 SHA256 校验和文件..."
     local tmp_sha="${tmp_bin}.sha256"
-    if curl -fL --retry 2 --connect-timeout 10 -o "$tmp_sha" "$sha256_url" 2>/dev/null; then
+    if curl -H "Cache-Control: no-cache" -fL --retry 2 --connect-timeout 10 -o "$tmp_sha" "$sha256_url" 2>/dev/null; then
         log_info "开始进行二进制程序哈希校验..."
         local expected_hash
         expected_hash=$(awk '{print $1}' "$tmp_sha" | tr -d '\r\n')
