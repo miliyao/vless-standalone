@@ -23,7 +23,7 @@ usage() {
   bash install.sh [参数]
 
 可选参数:
-  --port=8443               监听端口 (默认: 8443)
+  --port=443                监听端口 (默认: 443)
   --domain=www.amd.com      Reality 伪装目标域名 (默认: www.amd.com)
   --uuid=xxxxxx             指定 VLESS UUID (默认: 自动生成)
   --private-key=xxxxxx      指定 Reality 私钥 (默认: 自动生成)
@@ -291,7 +291,7 @@ EOF
 main() {
     require_root
     
-    LISTEN_PORT=8443
+    LISTEN_PORT=443
     DEST_DOMAIN="www.amd.com"
     USER_UUID=""
     PRIVATE_KEY=""

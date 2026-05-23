@@ -38,7 +38,7 @@ go build -o vless-standalone
 ```json
 {
   "log_level": "info",
-  "server_port": 8443,
+  "server_port": 443,
   "listen_ip": "0.0.0.0",
   "flow": "xtls-rprx-vision",
   "google_ipv6": true,
