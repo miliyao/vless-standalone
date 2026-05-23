@@ -352,6 +352,41 @@ main() {
     done
 
     install_packages
+
+    # 如果已存在配置文件且未通过参数指定，则优先加载旧配置的参数，保证一致性
+    if [ -f "$CONFIG_FILE" ]; then
+        log_info "检测到已存在的配置文件: ${CONFIG_FILE}，正在自动加载参数..."
+        [ -z "$USER_UUID" ] && USER_UUID=$(jq -r '.uuids[0]' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+        [ -z "$PRIVATE_KEY" ] && PRIVATE_KEY=$(jq -r '.tls_settings.private_key' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+        [ -z "$SHORT_ID" ] && SHORT_ID=$(jq -r '.tls_settings.short_id[0]' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+        
+        if [ "$LISTEN_PORT" -eq 443 ]; then
+            local port
+            port=$(jq -r '.server_port' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+            [ -n "$port" ] && LISTEN_PORT="$port"
+        fi
+        if [ "$DEST_DOMAIN" = "www.amd.com" ]; then
+            local domain
+            domain=$(jq -r '.tls_settings.server_name' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+            [ -n "$domain" ] && DEST_DOMAIN="$domain"
+        fi
+        if [ "$MAX_CONN" -eq 100 ]; then
+            local conn
+            conn=$(jq -r '.max_conn_per_ip' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+            [ -n "$conn" ] && MAX_CONN="$conn"
+        fi
+        if [ "$MAX_CPS" -eq 60 ]; then
+            local cps
+            cps=$(jq -r '.max_new_conn_per_ip_per_min' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+            [ -n "$cps" ] && MAX_CPS="$cps"
+        fi
+        if [ "$GOOGLE_IPV6" = "false" ]; then
+            local ipv6
+            ipv6=$(jq -r '.google_ipv6' "$CONFIG_FILE" 2>/dev/null | grep -v '^null$' || true)
+            [ -n "$ipv6" ] && GOOGLE_IPV6="$ipv6"
+        fi
+    fi
+
     detect_arch
     install_binary
     generate_secrets
