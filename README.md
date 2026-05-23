@@ -61,8 +61,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/miliyao/vless-standalone/mai
 # 整理依赖
 go mod tidy
 
-# 编译程序
-go build -o vless-standalone
+# 编译程序 (必须包含 with_utls 编译标签以支持 Reality)
+go build -tags with_utls -o vless-standalone
 ```
 
 #### B. 编写配置文件 `config.json`
