@@ -4,6 +4,7 @@ set -eu
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 SERVICE_NAME="vless-standalone"
@@ -11,7 +12,7 @@ INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/${SERVICE_NAME}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-RELEASE_REPO="miliyao/singbox-bridge"
+RELEASE_REPO="miliyao/vless-standalone"
 RELEASE_VERSION="latest"
 
 usage() {
@@ -26,7 +27,9 @@ usage() {
   --domain=www.amd.com      Reality 伪装目标域名 (默认: www.amd.com)
   --uuid=xxxxxx             指定 VLESS UUID (默认: 自动生成)
   --private-key=xxxxxx      指定 Reality 私钥 (默认: 自动生成)
+  --public-key=xxxxxx       指定 Reality 公钥 (默认: 自动生成或推导)
   --version=latest          发布包版本 (默认: latest)
+  --show-secrets            控制台输出中显示 Reality 私钥等敏感信息 (默认: 隐藏)
   --help | -h               查看此帮助信息
 EOF
 }
@@ -87,6 +90,18 @@ detect_arch() {
     esac
 }
 
+get_public_ip() {
+    log_info "正在检测服务器公网 IP 地址..."
+    local ip=""
+    # 尝试多种常用的公共 IP API，设定超时防止卡住
+    ip=$(curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || \
+         curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || \
+         curl -sS --max-time 5 https://ipinfo.io/ip 2>/dev/null || \
+         curl -sS --max-time 5 https://icanhazip.com 2>/dev/null || \
+         echo "YOUR_VPS_IP")
+    echo "$ip"
+}
+
 generate_secrets() {
     if [ -z "${USER_UUID:-}" ]; then
         if command -v uuidgen >/dev/null 2>&1; then
@@ -96,12 +111,33 @@ generate_secrets() {
         fi
     fi
 
+    local binary_path="${INSTALL_DIR}/${SERVICE_NAME}"
     if [ -z "${PRIVATE_KEY:-}" ]; then
-        log_info "正在生成 Reality 随机私钥..."
-        if openssl genpkey -algorithm x25519 -outform DER 2>/dev/null | tail -c 32 | base64 > /dev/null 2>&1; then
-            PRIVATE_KEY=$(openssl genpkey -algorithm x25519 -outform DER | tail -c 32 | base64 | tr -d '\n\r=')
+        log_info "正在通过二进制程序生成 Reality 随机私钥和公钥..."
+        local keys_json=""
+        if keys_json=$("$binary_path" -gen-key 2>/dev/null); then
+            PRIVATE_KEY=$(echo "$keys_json" | jq -r '.private_key')
+            PUBLIC_KEY=$(echo "$keys_json" | jq -r '.public_key')
         else
-            PRIVATE_KEY=$(openssl rand -base64 32 | tr -d '\n\r=')
+            log_error "通过二进制程序生成密钥对失败，使用系统备份逻辑仅生成私钥 (无法自动生成分享链接！)"
+            PRIVATE_KEY=$(openssl genpkey -algorithm x25519 -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n\r=')
+        fi
+    fi
+
+    if [ -n "${PRIVATE_KEY:-}" ] && [ -z "${PUBLIC_KEY:-}" ]; then
+        log_info "已提供或生成私钥，正在推导对应的 Reality 公钥..."
+        if ! PUBLIC_KEY=$("$binary_path" -derive-pub "$PRIVATE_KEY" 2>/dev/null); then
+            log_warn "推导公钥失败，客户端链接可能需要手动指定公钥。"
+            PUBLIC_KEY=""
+        fi
+    fi
+
+    if [ -z "${SHORT_ID:-}" ]; then
+        log_info "正在生成 Reality 随机 short_id..."
+        if command -v openssl >/dev/null 2>&1; then
+            SHORT_ID=$(openssl rand -hex 8)
+        else
+            SHORT_ID=$(head -n 2 /dev/urandom | tr -dc 'a-f0-9' | head -c 16)
         fi
     fi
 }
@@ -109,11 +145,14 @@ generate_secrets() {
 download_binary() {
     local asset_name="vless-standalone-linux-${ARCH}"
     local download_url=""
+    local sha256_url=""
 
     if [ "$RELEASE_VERSION" = "latest" ]; then
         download_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}"
+        sha256_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}.sha256"
     else
         download_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}"
+        sha256_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}.sha256"
     fi
 
     log_info "正在从 GitHub 下载二进制程序..."
@@ -123,6 +162,29 @@ download_binary() {
     if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp_bin" "$download_url"; then
         log_error "从 GitHub 下载预编译包失败，请检查网络或版本号。"
         exit 1
+    fi
+
+    log_info "正在下载 SHA256 校验和文件..."
+    local tmp_sha="${tmp_bin}.sha256"
+    if curl -fL --retry 2 --connect-timeout 10 -o "$tmp_sha" "$sha256_url" 2>/dev/null; then
+        log_info "开始进行二进制程序哈希校验..."
+        local expected_hash
+        expected_hash=$(awk '{print $1}' "$tmp_sha" | tr -d '\r\n')
+        local actual_hash
+        actual_hash=$(sha256sum "$tmp_bin" | awk '{print $1}' | tr -d '\r\n')
+
+        if [ "$expected_hash" != "$actual_hash" ]; then
+            log_error "哈希值校验失败！"
+            log_error "预期: ${expected_hash}"
+            log_error "实际: ${actual_hash}"
+            rm -f "$tmp_bin" "$tmp_sha"
+            exit 1
+        fi
+        log_info "哈希值校验成功！"
+        rm -f "$tmp_sha"
+    else
+        log_warn "未发现 .sha256 校验文件，跳过完整性校验。"
+        rm -f "$tmp_sha"
     fi
 
     chmod +x "$tmp_bin"
@@ -150,29 +212,20 @@ write_config() {
   "flow": "xtls-rprx-vision",
   "log_level": "info",
   "clash_api_listen_addr": "",
+  "status_api_listen_addr": "127.0.0.1:23333",
   "google_ipv6": true,
+  "max_conn_per_ip": 100,
+  "max_new_conn_per_ip_per_min": 60,
   "tls_settings": {
     "server_name": "${DEST_DOMAIN}",
     "server_port": "443",
     "private_key": "${PRIVATE_KEY}",
     "short_id": [
-      "12345678",
-      "abcdef00"
+      "${SHORT_ID}"
     ]
   },
-  "limits": {
-    "max_conn_per_user": 128,
-    "max_conn_per_ip": 0,
-    "max_new_conn_per_user_per_min": 600,
-    "max_new_conn_per_ip_per_min": 0
-  },
-  "users": [
-    {
-      "name": "default-user",
-      "uuid": "${USER_UUID}",
-      "speed_limit": 0,
-      "device_limit": 0
-    }
+  "uuids": [
+    "${USER_UUID}"
   ]
 }
 EOF
@@ -242,6 +295,9 @@ main() {
     DEST_DOMAIN="www.amd.com"
     USER_UUID=""
     PRIVATE_KEY=""
+    PUBLIC_KEY=""
+    SHORT_ID=""
+    SHOW_SECRETS=false
 
     for arg in "$@"; do
         case "$arg" in
@@ -249,7 +305,9 @@ main() {
             --domain=*) DEST_DOMAIN="${arg#*=}" ;;
             --uuid=*) USER_UUID="${arg#*=}" ;;
             --private-key=*) PRIVATE_KEY="${arg#*=}" ;;
+            --public-key=*) PUBLIC_KEY="${arg#*=}" ;;
             --version=*) RELEASE_VERSION="${arg#*=}" ;;
+            --show-secrets) SHOW_SECRETS=true ;;
             --help|-h)
                 usage
                 exit 0
@@ -264,11 +322,24 @@ main() {
 
     install_packages
     detect_arch
-    generate_secrets
     download_binary
+    generate_secrets
     write_config
     write_service
     enable_bbr
+
+    SERVER_IP=$(get_public_ip)
+
+    # 构造标准 vless 分享链接
+    local vless_link=""
+    if [ -n "${PUBLIC_KEY}" ]; then
+        local remark="VLESS-Standalone-Reality"
+        vless_link="vless://${USER_UUID}@${SERVER_IP}:${LISTEN_PORT}?security=reality&sni=${DEST_DOMAIN}&pbk=${PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision"
+        if [ -n "${SHORT_ID}" ]; then
+            vless_link="${vless_link}&sid=${SHORT_ID}"
+        fi
+        vless_link="${vless_link}#${remark}"
+    fi
 
     echo -e "\n${GREEN}==================================================${NC}"
     echo -e "${GREEN} VLESS Standalone Reality 部署成功！${NC}"
@@ -277,12 +348,28 @@ main() {
     echo -e " 伪装域名: ${YELLOW}${DEST_DOMAIN}${NC}"
     echo -e " 用户UUID: ${YELLOW}${USER_UUID}${NC}"
     echo -e " 客户端流控: ${YELLOW}xtls-rprx-vision${NC}"
-    echo -e " Reality私钥: ${YELLOW}${PRIVATE_KEY}${NC}"
+    if [ "$SHOW_SECRETS" = true ]; then
+        echo -e " Reality私钥: ${YELLOW}${PRIVATE_KEY}${NC}"
+    else
+        echo -e " Reality私钥: ${YELLOW}(已写入配置文件，默认隐藏，使用 --show-secrets 选项查看)${NC}"
+    fi
+    if [ -n "${PUBLIC_KEY}" ]; then
+        echo -e " Reality公钥: ${YELLOW}${PUBLIC_KEY}${NC}"
+    fi
+    echo -e " Reality短ID: ${YELLOW}${SHORT_ID}${NC}"
     echo -e " 启动命令: ${YELLOW}systemctl start ${SERVICE_NAME}${NC}"
     echo -e " 重启命令: ${YELLOW}systemctl restart ${SERVICE_NAME}${NC}"
     echo -e " 运行日志: ${YELLOW}journalctl -u ${SERVICE_NAME} -f${NC}"
-    echo -e "${GREEN}==================================================${NC}\n"
+    echo -e " 负载监控: ${YELLOW}curl http://127.0.0.1:23333/status${NC}"
+    echo -e "${GREEN}==================================================${NC}"
+    if [ -n "${vless_link}" ]; then
+        echo -e " 客户端分享链接 (一键导入):"
+        echo -e " ${CYAN}${vless_link}${NC}"
+        echo -e "${GREEN}==================================================${NC}\n"
+    else
+        log_warn "由于未能推导或指定 Reality 公钥，未生成分享链接。"
+        echo -e "${GREEN}==================================================${NC}\n"
+    fi
 }
 
 main "$@"
-EOF

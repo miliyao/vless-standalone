@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
-	"runtime/debug"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,14 +24,26 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 func main() {
-	// 在 1C1G 极限制约的环境下，如果没有显式设置 GOMEMLIMIT，
-	// 则默认强行指定 750MiB 的 GC 垃圾回收触发软限制，以有效规避 OOM-Killer 强杀。
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(750 * 1024 * 1024)
+	configPath := flag.String("config", "config.json", "配置文件 config.json 的路径")
+	genKey := flag.Bool("gen-key", false, "生成一对 Reality X25519 私钥/公钥对并以 JSON 输出")
+	derivePub := flag.String("derive-pub", "", "根据给定的 Base64 私钥推导其对应的 Reality 公钥")
+	flag.Parse()
+
+	if *genKey {
+		if err := genRealityKeys(); err != nil {
+			fmt.Fprintf(os.Stderr, "生成 Reality 密钥对失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
-	configPath := flag.String("config", "config.json", "配置文件 config.json 的路径")
-	flag.Parse()
+	if *derivePub != "" {
+		if err := derivePublicKey(*derivePub); err != nil {
+			fmt.Fprintf(os.Stderr, "推导公钥失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// 预加载配置以获取日志等级
 	cfg, err := LoadConfig(*configPath)
@@ -44,6 +63,9 @@ func main() {
 
 	logger.Info("独立版 VLESS 节点正在启动...")
 
+	// 执行跨平台动态 GOMEMLIMIT 内存软限制调整 (规避 OOM 并提升 GC 效率)
+	setDynamicMemoryLimit(logger)
+
 	// 执行 Linux 运行环境网络及句柄上限自动调优与检测
 	checkSystemSettings(logger)
 
@@ -58,6 +80,12 @@ func main() {
 		logger.Fatal("节点引擎启动失败", zap.Error(err))
 	}
 	logger.Info("节点内核成功启动并已进入监听状态", zap.Int("listen_port", cfg.ServerPort))
+
+	// 启动本地状态监控 API 服务
+	var statusSrv *http.Server
+	if strings.TrimSpace(cfg.StatusAPIListenAddr) != "" {
+		statusSrv = startStatusAPI(strings.TrimSpace(cfg.StatusAPIListenAddr), limiter, logger)
+	}
 
 	// 注册信号接管：SIGHUP 用于热更新配置，SIGINT/SIGTERM 用于退出
 	sigCh := make(chan os.Signal, 1)
@@ -75,8 +103,8 @@ func main() {
 				continue
 			}
 
-			// 更新限制器的静态内存表
-			limiter.UpdateUsers(newCfg.Users)
+			// 更新限制器的配置限制阈值
+			limiter.UpdateConfig(newCfg)
 
 			// 重载 sing-box 底层内核监听
 			if err := engine.Reload(newCfg); err != nil {
@@ -90,8 +118,11 @@ func main() {
 
 			// 限制优雅关闭的最长阻断时间
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), shutdownTimeout)
-			_ = closeCtx
-			closeCancel()
+			defer closeCancel()
+
+			if statusSrv != nil {
+				_ = statusSrv.Shutdown(closeCtx)
+			}
 
 			if err := engine.Close(); err != nil {
 				logger.Error("关闭内核实例时发生错误", zap.Error(err))
@@ -138,4 +169,115 @@ func newLogger(level string) (*zap.Logger, error) {
 	}
 
 	return cfg.Build()
+}
+
+// startStatusAPI 启动面向 localhost 的健康度与负载快照查询端口
+func startStatusAPI(addr string, limiter *Limiter, logger *zap.Logger) *http.Server {
+	mux := http.NewServeMux()
+	startTime := time.Now()
+
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// 核心安全校验：仅允许本地环回接口地址访问，防止公网暴露
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error": "forbidden - invalid remote address"}`))
+			return
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || (!ip.IsLoopback() && host != "localhost") {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error": "forbidden - local access only"}`))
+			return
+		}
+
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+
+		snapshot := limiter.Snapshot()
+		res := map[string]interface{}{
+			"active_ips":         snapshot["active_ips"],
+			"active_connections": snapshot["active_connections"],
+			"uptime_seconds":     int64(time.Since(startTime).Seconds()),
+			"memory_alloc_mib":   float64(memStats.Alloc) / 1024 / 1024,
+			"memory_sys_mib":     float64(memStats.Sys) / 1024 / 1024,
+			"num_gc":             memStats.NumGC,
+			"goroutines":         runtime.NumGoroutine(),
+		}
+
+		data, err := json.MarshalIndent(res, "", "  ")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error": "internal server error"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	})
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		logger.Info("本地状态监控 API 服务已启动", zap.String("listen_addr", addr))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("本地状态监控 API 服务运行异常终止", zap.Error(err))
+		}
+	}()
+
+	return server
+}
+
+// genRealityKeys 生成一对符合 Reality 规范的 X25519 密钥对
+func genRealityKeys() error {
+	privKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	pubKey := privKey.PublicKey()
+
+	privStr := base64.RawURLEncoding.EncodeToString(privKey.Bytes())
+	pubStr := base64.RawURLEncoding.EncodeToString(pubKey.Bytes())
+
+	res := map[string]string{
+		"private_key": privStr,
+		"public_key":  pubStr,
+	}
+	data, err := json.MarshalIndent(res, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
+// derivePublicKey 根据给定的 Base64 编码私钥推导出对应的 Reality 公钥
+func derivePublicKey(privStr string) error {
+	// 统一处理可能含有的等号填充以及 URL 安全 Base64 和标准 Base64 的兼容
+	privStr = strings.TrimRight(privStr, "=")
+	privStr = strings.ReplaceAll(privStr, "+", "-")
+	privStr = strings.ReplaceAll(privStr, "/", "_")
+
+	privBytes, err := base64.RawURLEncoding.DecodeString(privStr)
+	if err != nil {
+		return fmt.Errorf("Base64 解密私钥失败: %w", err)
+	}
+
+	if len(privBytes) != 32 {
+		return fmt.Errorf("私钥长度必须为 32 字节，当前为 %d 字节", len(privBytes))
+	}
+
+	privKey, err := ecdh.X25519().NewPrivateKey(privBytes)
+	if err != nil {
+		return fmt.Errorf("解析 X25519 私钥失败: %w", err)
+	}
+
+	pubKey := privKey.PublicKey()
+	pubStr := base64.RawURLEncoding.EncodeToString(pubKey.Bytes())
+	fmt.Println(pubStr)
+	return nil
 }

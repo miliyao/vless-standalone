@@ -1,0 +1,24 @@
+{
+  "log_level": "info",
+  "server_port": 443,
+  "listen_ip": "0.0.0.0",
+  "flow": "xtls-rprx-vision",
+  "google_ipv6": true,
+  "clash_api_listen_addr": "127.0.0.1:9090",
+  "status_api_listen_addr": "127.0.0.1:23333",
+  "max_conn_per_ip": 100,
+  "max_new_conn_per_ip_per_min": 60,
+  "tls_settings": {
+    "server_name": "www.lovelive-anime.jp",
+    "server_port": "443",
+    "private_key": "YOUR_REALITY_PRIVATE_KEY_HERE",
+    "short_id": [
+      "0123456789abcdef",
+      "fedcba9876543210"
+    ]
+  },
+  "uuids": [
+    "de305d54-75b4-431b-adb2-eb6b9e546013",
+    "de305d54-75b4-431b-adb2-eb6b9e546014"
+  ]
+}

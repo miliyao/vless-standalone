@@ -1,0 +1,12 @@
+# 编译产物
+vless-standalone
+vless-standalone.exe
+*.exe
+*.test
+*.out
+
+# Go 缓存与 IDE 目录
+.gocache/
+.idea/
+.vscode/
+.DS_Store

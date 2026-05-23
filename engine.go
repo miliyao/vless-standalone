@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,12 +41,13 @@ const (
 
 // Engine 负责管理底层嵌入式 sing-box 的生命周期与配置重载
 type Engine struct {
-	mu            sync.Mutex
-	instance      *box.Box
-	limiter       *Limiter
-	logger        *zap.Logger
-	googleIPv6    bool
-	clashAPIAddr  string
+	mu           sync.Mutex
+	instance     *box.Box
+	limiter      *Limiter
+	logger       *zap.Logger
+	googleIPv6   bool
+	clashAPIAddr string
+	activeCfg    *Config // 保存当前成功运行的配置，用于回滚
 }
 
 func NewEngine(cfg *Config, limiter *Limiter, logger *zap.Logger) *Engine {
@@ -72,6 +74,7 @@ func (e *Engine) Start(cfg *Config) error {
 	}
 
 	e.instance = instance
+	e.activeCfg = cfg
 	return nil
 }
 
@@ -79,26 +82,44 @@ func (e *Engine) Reload(cfg *Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.logger.Info("开始重载配置文件...")
+	e.logger.Info("开始重载配置文件 (注：由于端口独占绑定限制，热重载过程中会有毫秒级的短暂连接中断)...")
 	newInstance, err := e.createBox(cfg)
 	if err != nil {
-		return fmt.Errorf("创建新内核实例失败: %w", err)
+		return fmt.Errorf("解析新配置文件失败: %w", err)
 	}
 
 	oldInstance := e.instance
-	e.instance = nil
+	startTime := time.Now()
 
+	// 1. 先行关闭旧实例释放独占绑定的监听端口
 	if oldInstance != nil {
 		_ = oldInstance.Close()
 	}
 
+	// 2. 启动新实例重新接管监听端口
 	if err := newInstance.Start(); err != nil {
+		e.logger.Error("启动新内核实例失败，尝试拉起旧配置防灾回滚...", zap.Error(err))
 		_ = newInstance.Close()
-		return fmt.Errorf("启动新内核实例失败: %w", err)
+
+		// 回滚逻辑：使用备份的 activeCfg 重新初始化并启动
+		if e.activeCfg != nil {
+			fallbackInstance, rollbackErr := e.createBox(e.activeCfg)
+			if rollbackErr == nil {
+				if rollbackStartErr := fallbackInstance.Start(); rollbackStartErr == nil {
+					e.instance = fallbackInstance
+					e.logger.Warn("已成功将服务实例回滚至老配置运行，避免了节点瘫痪")
+					return fmt.Errorf("启动新配置失败: %w；已成功回滚至老配置运行", err)
+				} else {
+					_ = fallbackInstance.Close()
+				}
+			}
+		}
+		return fmt.Errorf("启动新配置失败且回滚失败: %w", err)
 	}
 
 	e.instance = newInstance
-	e.logger.Info("重载配置文件完成")
+	e.activeCfg = cfg
+	e.logger.Info("热重载配置文件完成", zap.Duration("interruption_duration", time.Since(startTime)))
 	return nil
 }
 
@@ -174,12 +195,12 @@ func (e *Engine) buildSingboxOptions(cfg *Config) (option.Options, error) {
 		return option.Options{}, err
 	}
 
-	// 解析用户
-	sbUsers := make([]option.VLESSUser, 0, len(cfg.Users))
-	for _, user := range cfg.Users {
+	// 解析匿名用户 UUID 列表并生成用户标识
+	sbUsers := make([]option.VLESSUser, 0, len(cfg.UUIDs))
+	for i, uuid := range cfg.UUIDs {
 		sbUsers = append(sbUsers, option.VLESSUser{
-			Name: user.Name,
-			UUID: user.UUID,
+			Name: "user-" + strconv.Itoa(i+1),
+			UUID: uuid,
 			Flow: flow,
 		})
 	}
@@ -223,7 +244,7 @@ func (e *Engine) buildSingboxOptions(cfg *Config) (option.Options, error) {
 									},
 								},
 								PrivateKey: cfg.TLSSettings.PrivateKey,
-								ShortID:    badoption.Listable[string](cfg.TLSSettings.ShortID),
+								ShortID:    toList(cfg.TLSSettings.ShortID),
 							},
 						},
 					},
@@ -447,4 +468,13 @@ func (e *Engine) resolveListenAddr(raw string) (netip.Addr, error) {
 		return netip.Addr{}, fmt.Errorf("无效的监听 IP 格式 %q: %w", raw, err)
 	}
 	return addr, nil
+}
+
+func toList[T any](values []T) badoption.Listable[T] {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(badoption.Listable[T], len(values))
+	copy(out, values)
+	return out
 }
