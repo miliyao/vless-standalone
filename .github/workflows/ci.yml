@@ -40,5 +40,5 @@ jobs:
 
       - name: Build Binary (Verification)
         run: |
-          GOOS=linux GOARCH=amd64 go build -o vless-standalone-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -o vless-standalone-linux-arm64 .
+          GOOS=linux GOARCH=amd64 go build -tags with_utls -o vless-standalone-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -tags with_utls -o vless-standalone-linux-arm64 .
