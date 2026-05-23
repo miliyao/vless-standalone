@@ -164,8 +164,8 @@ install_binary() {
     local sha256_url=""
 
     if [ "$RELEASE_VERSION" = "latest" ]; then
-        download_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}"
-        sha256_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}.sha256"
+        download_url="https://raw.githubusercontent.com/${RELEASE_REPO}/main/${asset_name}"
+        sha256_url="https://raw.githubusercontent.com/${RELEASE_REPO}/main/${asset_name}.sha256"
     else
         download_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}"
         sha256_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}.sha256"
