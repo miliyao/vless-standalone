@@ -211,7 +211,8 @@ write_config() {
     
     if [ -f "$CONFIG_FILE" ]; then
         log_warn "检测到已存在的配置文件: ${CONFIG_FILE}"
-        read -p "是否覆盖已有的配置文件? [y/N]: " confirm
+        local confirm="n"
+        read -p "是否覆盖已有的配置文件? [y/N]: " confirm || true
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             log_info "已跳过配置文件生成，将使用原有配置。"
             return
