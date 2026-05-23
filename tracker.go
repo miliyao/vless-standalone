@@ -47,9 +47,15 @@ func (t *limiterTracker) RoutedConnection(ctx context.Context, conn net.Conn, me
 	}
 }
 
-// RoutedPacketConnection 劫持 UDP 连接进行并发和速率拦截
+// RoutedPacketConnection 劫持 UDP 连接进行并发和速率拦截并绑定活跃时间追踪
 func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) N.PacketConn {
 	meta := t.buildConnMeta(metadata)
+	meta.IsUDP = true
+
+	// 初始化 UDP 活跃纳秒时间戳并传入指针
+	lastActive := time.Now().UnixNano()
+	meta.LastActive = &lastActive
+
 	if decision := t.limiter.Check(meta, meta.StartedAt); !decision.Allow {
 		if t.logger != nil {
 			t.logger.Warn("UDP 报文连接请求因 IP 并发超限被拦截",
@@ -60,12 +66,18 @@ func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.Pack
 		_ = conn.Close()
 		return conn
 	}
-	t.limiter.Register(meta)
-	return &trackedPacketConn{
+
+	tpc := &trackedPacketConn{
 		PacketConn: conn,
 		limiter:    t.limiter,
 		meta:       meta,
+		lastActive: &lastActive,
 	}
+	// 绑定主动关闭底层的 CloseFunc，供 Limiter Janitor 定时调用
+	tpc.meta.CloseFunc = tpc.Close
+
+	t.limiter.Register(tpc.meta)
+	return tpc
 }
 
 func (t *limiterTracker) buildConnMeta(metadata adapter.InboundContext) ConnMeta {
@@ -104,9 +116,10 @@ func (c *trackedConn) Close() error {
 
 type trackedPacketConn struct {
 	N.PacketConn
-	limiter   *Limiter
-	meta      ConnMeta
-	closeOnce sync.Once
+	limiter    *Limiter
+	meta       ConnMeta
+	closeOnce  sync.Once
+	lastActive *int64
 }
 
 func (c *trackedPacketConn) Upstream() any {
@@ -134,11 +147,19 @@ func (c *trackedPacketConn) RearHeadroom() int {
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (metadata.Socksaddr, error) {
-	return c.PacketConn.ReadPacket(buffer)
+	addr, err := c.PacketConn.ReadPacket(buffer)
+	if err == nil {
+		atomic.StoreInt64(c.lastActive, time.Now().UnixNano())
+	}
+	return addr, err
 }
 
 func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, destination metadata.Socksaddr) error {
-	return c.PacketConn.WritePacket(buffer, destination)
+	err := c.PacketConn.WritePacket(buffer, destination)
+	if err == nil {
+		atomic.StoreInt64(c.lastActive, time.Now().UnixNano())
+	}
+	return err
 }
 
 func (c *trackedPacketConn) Close() error {

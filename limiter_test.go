@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -234,5 +235,66 @@ func TestUpdateConfig(t *testing.T) {
 	// 现在应当允许了
 	if !limiter.Check(meta2, now).Allow {
 		t.Fatalf("更新限额后，第二个连接应当允许")
+	}
+}
+
+func TestCheck_UDPIdleJanitor(t *testing.T) {
+	cfg := &Config{
+		MaxConnPerIP:          2,
+		MaxNewConnPerIPPerMin: 0,
+	}
+	limiter := NewLimiter(cfg)
+
+	ip := netip.MustParseAddr("192.168.1.1")
+	now := time.Now()
+
+	// 模拟一个 UDP 连接
+	lastActive := now.UnixNano()
+	var closed bool
+	var mu sync.Mutex
+
+	meta := ConnMeta{
+		ConnID:     "udp-1",
+		SourceIP:   ip,
+		StartedAt:  now,
+		IsUDP:      true,
+		LastActive: &lastActive,
+		CloseFunc:  func() error {
+			mu.Lock()
+			closed = true
+			mu.Unlock()
+			// 模拟 close 行为注销连接
+			limiter.Unregister(ConnMeta{ConnID: "udp-1", SourceIP: ip})
+			return nil
+		},
+	}
+
+	limiter.Register(meta)
+
+	// 此时并发数应该是 1
+	snap := limiter.Snapshot()
+	if snap["active_connections"].(int) != 1 {
+		t.Fatalf("初始 UDP 并发数应当为 1，实际为 %v", snap["active_connections"])
+	}
+
+	// 模拟时间推移 40 秒前 (让它过期)
+	atomic.StoreInt64(&lastActive, time.Now().Add(-40*time.Second).UnixNano())
+
+	// 手动触发一次 cleanupIdleUDP
+	limiter.cleanupIdleUDP()
+
+	// 等待一小会儿让 goroutine 执行 close
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	if !closed {
+		mu.Unlock()
+		t.Fatalf("UDP 连接未被 Janitor 主动关闭")
+	}
+	mu.Unlock()
+
+	snap = limiter.Snapshot()
+	if snap["active_connections"].(int) != 0 {
+		t.Fatalf("清除后并发数应当为 0，实际为 %v", snap["active_connections"])
 	}
 }

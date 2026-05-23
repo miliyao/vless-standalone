@@ -7,19 +7,53 @@
 ## 🌟 核心特性
 
 1. **零外部依赖（解耦）**：无需对接任何 Web 面板或远程 API，纯单机控制。
-2. **源 IP 并发与新建连接限制 (CPS)**：内置高性能连接审计器，自动限制单源 IP 的最大并发连接数和新建连接速率，有效防御端口滥用和网络爬虫轰炸。
+2. **高并发分片锁与滑动窗口限流 (CPS)**：限制器采用 64 分片锁（Lock Sharding）降低高并发下的锁竞争损耗，同时内置高精度滑动窗口日志算法限制单源 IP 的最大并发连接数和每分钟新建连接速率，有效防御端口滥用和网络爬虫轰炸。
 3. **安全防灾热重载**：
    * 支持通过发送 `SIGHUP` 信号热更新配置而不中断现有进程。
    * **灾备回滚**：如果重载时新配置发生格式错误或新内核启动失败（例如端口冲突），将自动回滚拉起原配置运行，确保节点绝对高可用。
 4. **动态内存优化**：自动检测 VPS 物理内存限制（兼容 Cgroup v1/v2 以及物理内存 `/proc/meminfo`），以可用物理内存的 **80%** 动态设定 Golang 垃圾回收软阈值 (`GOMEMLIMIT`)，在规避 OOM 的同时最大化利用空闲内存。
-5. **UDP 稳定性保障**：安全透传 Mux 协议底层的 Headroom 数据，彻底规避 UDP 数据流转发时的 `panic: buffer overflow`（缓冲区溢出）隐患。
+5. **UDP 稳定性与空闲主动回收**：
+   * 安全透传 Mux 协议底层的 Headroom 数据，彻底规避 UDP 数据流转发时的 `panic: buffer overflow`（缓冲区溢出）隐患。
+   * **空闲清理 (Janitor)**：在控制面实时追踪 UDP 报文活跃时间戳，对于闲置 30 秒以上的 UDP 连接进行主动释放和注销，避免连接数额度被死连接占满。
 6. **内置密钥推导工具**：程序自身携带 Reality 密钥生成和公钥推导命令行工具，降低外部命令依赖。
 
 ---
 
 ## 🛠️ 快速开始
 
-### 1. 编译项目
+### 1. 一键安装部署（推荐，适用于 Linux 境外 VPS）
+
+可以直接运行以下一键脚本进行安装：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/miliyao/vless-standalone/main/install.sh)
+```
+
+> [!TIP]
+> * 该脚本会自动获取对应 CPU 架构的最新编译发布包、自动创建配置文件并配置证书密钥、托管 Systemd 服务并开启 Linux 内核 BBR 优化。
+> * **可配参数**：您可以在一键命令后附加参数自定义端口或限制，例如限制单 IP 并发数为 50：
+>   `bash <(curl -fsSL https://raw.githubusercontent.com/miliyao/vless-standalone/main/install.sh) --port=8443 --max-conn=50`
+
+#### 一键脚本参数说明
+
+| 安装参数 | 示例 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `--port` | `--port=443` | `443` | 代理服务外部监听端口 |
+| `--domain` | `--domain=www.amd.com` | `www.amd.com` | Reality 伪装握手 SNI 域名 |
+| `--uuid` | `--uuid=xxxxxx` | 随机生成 | 指定连接 UUID，若空则自动创建 |
+| `--private-key` | `--private-key=xxx` | 随机生成 | 指定 Reality 密钥对中的私钥 |
+| `--max-conn` | `--max-conn=100` | `100` | 单源 IP 允许的最大并发连接数 (0 表示无限制) |
+| `--max-cps` | `--max-cps=60` | `60` | 单源 IP 每分钟允许新建的连接数限制 (0 表示无限制) |
+| `--google-ipv6` | `--google-ipv6=true`| `false` | 是否强制将 Google 流量通过本地 IPv6 路由直连 (可选: `true`/`false`) |
+| `--local` | `--local` | 关闭 | 使用本地编译的 `./vless-standalone` 进行覆盖部署（跳过 GitHub 远程下载） |
+| `--local-bin` | `--local-bin=./file`| `./vless-standalone` | 本地部署模式下指定要拷贝的本地二进制路径 |
+| `--show-secrets`| `--show-secrets` | 隐藏 | 在安装成功控制台输出中，是否显式显示 Reality 私钥 |
+
+---
+
+### 2. 手动编译部署（开发/测试）
+
+#### A. 编译项目
 
 在 Go 1.23.0+ 环境下，运行以下命令编译出二进制程序：
 
@@ -31,7 +65,7 @@ go mod tidy
 go build -o vless-standalone
 ```
 
-### 2. 编写配置文件 `config.json`
+#### B. 编写配置文件 `config.json`
 
 在程序同级目录下创建 `config.json`。配置范本如下：
 

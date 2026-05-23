@@ -30,6 +30,11 @@ usage() {
   --public-key=xxxxxx       指定 Reality 公钥 (默认: 自动生成或推导)
   --version=latest          发布包版本 (默认: latest)
   --show-secrets            控制台输出中显示 Reality 私钥等敏感信息 (默认: 隐藏)
+  --local                   使用本地编译的二进制文件，跳过从 GitHub 下载 (默认: 停用)
+  --local-bin=./file        指定本地二进制文件的路径 (默认: ./vless-standalone)
+  --max-conn=100            单源 IP 最大并发连接数限制 (默认: 100, 0 表示无限制)
+  --max-cps=60              单源 IP 每分钟新建连接速率限制 (默认: 60, 0 表示无限制)
+  --google-ipv6=true|false  是否将 Google 流量强制通过本地 IPv6 路由直连 (默认: false)
   --help | -h               查看此帮助信息
 EOF
 }
@@ -93,7 +98,6 @@ detect_arch() {
 get_public_ip() {
     log_info "正在检测服务器公网 IP 地址..."
     local ip=""
-    # 尝试多种常用的公共 IP API，设定超时防止卡住
     ip=$(curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || \
          curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || \
          curl -sS --max-time 5 https://ipinfo.io/ip 2>/dev/null || \
@@ -142,7 +146,19 @@ generate_secrets() {
     fi
 }
 
-download_binary() {
+install_binary() {
+    if [ "$USE_LOCAL" = true ]; then
+        log_info "检测到开启本地安装，正在使用本地二进制文件..."
+        if [ ! -f "$LOCAL_BIN_PATH" ]; then
+            log_error "未找到本地二进制文件: ${LOCAL_BIN_PATH}。请先编译或指定正确的文件路径。"
+            exit 1
+        fi
+        chmod +x "$LOCAL_BIN_PATH"
+        cp "$LOCAL_BIN_PATH" "${INSTALL_DIR}/${SERVICE_NAME}"
+        log_info "本地二进制程序复制安装成功: ${INSTALL_DIR}/${SERVICE_NAME}"
+        return
+    fi
+
     local asset_name="vless-standalone-linux-${ARCH}"
     local download_url=""
     local sha256_url=""
@@ -213,9 +229,9 @@ write_config() {
   "log_level": "info",
   "clash_api_listen_addr": "",
   "status_api_listen_addr": "127.0.0.1:23333",
-  "google_ipv6": true,
-  "max_conn_per_ip": 100,
-  "max_new_conn_per_ip_per_min": 60,
+  "google_ipv6": ${GOOGLE_IPV6},
+  "max_conn_per_ip": ${MAX_CONN},
+  "max_new_conn_per_ip_per_min": ${MAX_CPS},
   "tls_settings": {
     "server_name": "${DEST_DOMAIN}",
     "server_port": "443",
@@ -298,6 +314,11 @@ main() {
     PUBLIC_KEY=""
     SHORT_ID=""
     SHOW_SECRETS=false
+    USE_LOCAL=false
+    LOCAL_BIN_PATH="./vless-standalone"
+    MAX_CONN=100
+    MAX_CPS=60
+    GOOGLE_IPV6="false"
 
     for arg in "$@"; do
         case "$arg" in
@@ -308,6 +329,17 @@ main() {
             --public-key=*) PUBLIC_KEY="${arg#*=}" ;;
             --version=*) RELEASE_VERSION="${arg#*=}" ;;
             --show-secrets) SHOW_SECRETS=true ;;
+            --local) USE_LOCAL=true ;;
+            --local-bin=*) USE_LOCAL=true; LOCAL_BIN_PATH="${arg#*=}" ;;
+            --max-conn=*) MAX_CONN="${arg#*=}" ;;
+            --max-cps=*) MAX_CPS="${arg#*=}" ;;
+            --google-ipv6=*)
+                if [ "${arg#*=}" = "true" ]; then
+                    GOOGLE_IPV6="true"
+                else
+                    GOOGLE_IPV6="false"
+                fi
+                ;;
             --help|-h)
                 usage
                 exit 0
@@ -322,7 +354,7 @@ main() {
 
     install_packages
     detect_arch
-    download_binary
+    install_binary
     generate_secrets
     write_config
     write_service
@@ -348,6 +380,9 @@ main() {
     echo -e " 伪装域名: ${YELLOW}${DEST_DOMAIN}${NC}"
     echo -e " 用户UUID: ${YELLOW}${USER_UUID}${NC}"
     echo -e " 客户端流控: ${YELLOW}xtls-rprx-vision${NC}"
+    echo -e " 单IP并发连接限制: ${YELLOW}${MAX_CONN}${NC}"
+    echo -e " 单IP新建速率限制: ${YELLOW}${MAX_CPS} conn/min${NC}"
+    echo -e " 谷歌 IPv6 优先分流: ${YELLOW}${GOOGLE_IPV6}${NC}"
     if [ "$SHOW_SECRETS" = true ]; then
         echo -e " Reality私钥: ${YELLOW}${PRIVATE_KEY}${NC}"
     else
