@@ -96,7 +96,7 @@ detect_arch() {
 }
 
 get_public_ip() {
-    log_info "正在检测服务器公网 IP 地址..."
+    log_info "正在检测服务器公网 IP 地址..." >&2
     local ip=""
     ip=$(curl -sS --max-time 5 https://api.ipify.org 2>/dev/null || \
          curl -sS --max-time 5 https://ifconfig.me 2>/dev/null || \
@@ -366,7 +366,9 @@ main() {
     local vless_link=""
     if [ -n "${PUBLIC_KEY}" ]; then
         local remark="VLESS-Standalone-Reality"
-        vless_link="vless://${USER_UUID}@${SERVER_IP}:${LISTEN_PORT}?security=reality&sni=${DEST_DOMAIN}&pbk=${PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision"
+        local fps=("chrome" "firefox" "safari" "edge")
+        local rand_fp=${fps[$((RANDOM % 4))]}
+        vless_link="vless://${USER_UUID}@${SERVER_IP}:${LISTEN_PORT}?security=reality&sni=${DEST_DOMAIN}&pbk=${PUBLIC_KEY}&fp=${rand_fp}&type=tcp&flow=xtls-rprx-vision"
         if [ -n "${SHORT_ID}" ]; then
             vless_link="${vless_link}&sid=${SHORT_ID}"
         fi
