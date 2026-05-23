@@ -367,7 +367,7 @@ main() {
         local remark="VLESS-Standalone-Reality"
         local fps=("chrome" "firefox" "safari" "edge")
         local rand_fp=${fps[$((RANDOM % 4))]}
-        vless_link="vless://${USER_UUID}@${SERVER_IP}:${LISTEN_PORT}?security=reality&sni=${DEST_DOMAIN}&pbk=${PUBLIC_KEY}&fp=${rand_fp}&type=tcp&flow=xtls-rprx-vision&spx=%2F"
+        vless_link="vless://${USER_UUID}@${SERVER_IP}:${LISTEN_PORT}?security=reality&sni=${DEST_DOMAIN}&pbk=${PUBLIC_KEY}&fp=${rand_fp}&type=tcp&flow=xtls-rprx-vision&spx=/"
         if [ -n "${SHORT_ID}" ]; then
             vless_link="${vless_link}&sid=${SHORT_ID}"
         fi
