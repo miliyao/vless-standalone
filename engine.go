@@ -284,7 +284,7 @@ func (e *Engine) buildRouteOptions() *option.RouteOptions {
 	}
 
 	// 注入安全规则
-	route.Rules = append(route.Rules, e.defaultSafetyRules()...)
+	route.Rules = e.defaultSafetyRules()
 
 	return route
 }
