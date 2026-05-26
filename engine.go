@@ -286,28 +286,6 @@ func (e *Engine) buildRouteOptions() *option.RouteOptions {
 	// 注入安全规则
 	route.Rules = append(route.Rules, e.defaultSafetyRules()...)
 
-	// 远程规则集：geoip-cn 与 geosite-cn
-	route.RuleSet = append(route.RuleSet, []option.RuleSet{
-		{
-			Type:   "remote",
-			Tag:    "geoip-cn",
-			Format: "binary",
-			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://fastly.jsdelivr.net/gh/lyc8503/sing-box-rules@rule-set-geoip/geoip-cn.srs",
-				DownloadDetour: directOutboundTag,
-			},
-		},
-		{
-			Type:   "remote",
-			Tag:    "geosite-cn",
-			Format: "binary",
-			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://fastly.jsdelivr.net/gh/lyc8503/sing-box-rules@rule-set-geosite/geosite-cn.srs",
-				DownloadDetour: directOutboundTag,
-			},
-		},
-	}...)
-
 	return route
 }
 
@@ -329,10 +307,6 @@ func (e *Engine) defaultSafetyRules() []option.Rule {
 		e.rejectRule(option.RawDefaultRule{
 			Port:      badoption.Listable[uint16]{445, 3389},
 			PortRange: badoption.Listable[string]{"135:139"},
-		}),
-		// 5. 拦截中国大陆 IP 与域名 (防御反爬审计)
-		e.rejectRule(option.RawDefaultRule{
-			RuleSet: badoption.Listable[string]{"geoip-cn", "geosite-cn"},
 		}),
 	}
 }
