@@ -234,9 +234,9 @@ install_binary() {
     tmp_dir=$(mktemp -d)
     local tmp_bin="${tmp_dir}/${asset_name}"
     local tmp_sha="${tmp_dir}/${asset_name}.sha256"
-    trap 'rm -rf "$tmp_dir"' RETURN
 
     if ! curl -fL --retry 3 --connect-timeout 15 -o "$tmp_bin" "$DOWNLOAD_URL"; then
+        rm -rf "$tmp_dir"
         log_error "下载二进制失败，请检查网络、版本号或 --base-url"
         exit 1
     fi
@@ -250,6 +250,7 @@ install_binary() {
             log_error "SHA256 校验失败"
             log_error "期望: ${expected_hash}"
             log_error "实际: ${actual_hash}"
+            rm -rf "$tmp_dir"
             exit 1
         fi
         log_info "SHA256 校验通过"
@@ -257,10 +258,12 @@ install_binary() {
         log_warn "未找到 .sha256 文件，已按 --skip-checksum 跳过校验"
     else
         log_error "未找到 .sha256 校验文件。若确认下载源可信，可加 --skip-checksum"
+        rm -rf "$tmp_dir"
         exit 1
     fi
 
     install -m 0755 "$tmp_bin" "$target"
+    rm -rf "$tmp_dir"
     log_info "二进制安装完成: ${target}"
 }
 
