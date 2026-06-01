@@ -109,8 +109,8 @@ go build -tags with_utls -o vless-standalone
   "google_ipv6": true,
   "clash_api_listen_addr": "",
   "status_api_listen_addr": "127.0.0.1:23333",
-  "max_conn_per_ip": 100,
-  "max_new_conn_per_ip_per_min": 60,
+  "max_conn_per_ip": 80,
+  "max_new_conn_per_ip_per_min": 240,
   "tls_settings": {
     "server_name": "www.amd.com",
     "server_port": "443",
@@ -191,8 +191,8 @@ curl http://127.0.0.1:23333/status
   "active_connections": 87,
   "active_udp_connections": 4,
   "limit_settings": {
-    "max_conn_per_ip": 100,
-    "max_new_conn_per_ip_per_min": 60,
+    "max_conn_per_ip": 80,
+    "max_new_conn_per_ip_per_min": 240,
     "window_seconds": 60
   },
   "uptime_seconds": 12345,

@@ -448,8 +448,8 @@ main() {
     SHOW_SECRETS=false
     USE_LOCAL=false
     LOCAL_BIN_PATH="./vless-standalone"
-    MAX_CONN=100
-    MAX_CPS=60
+    MAX_CONN=80
+    MAX_CPS=240
     GOOGLE_IPV6="false"
     SKIP_CHECKSUM=false
     PORT_SET=false
