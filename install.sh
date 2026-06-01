@@ -204,8 +204,8 @@ asset_urls() {
         DOWNLOAD_URL="${BASE_URL}/${asset_name}"
         SHA256_URL="${BASE_URL}/${asset_name}.sha256"
     elif [ "$RELEASE_VERSION" = "latest" ]; then
-        DOWNLOAD_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/main/${asset_name}"
-        SHA256_URL="https://raw.githubusercontent.com/${RELEASE_REPO}/main/${asset_name}.sha256"
+        DOWNLOAD_URL="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}"
+        SHA256_URL="https://github.com/${RELEASE_REPO}/releases/latest/download/${asset_name}.sha256"
     else
         DOWNLOAD_URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}"
         SHA256_URL="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_VERSION}/${asset_name}.sha256"
