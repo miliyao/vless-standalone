@@ -154,6 +154,8 @@ load_existing_config() {
         ipv6=$(jq -r '.google_ipv6 // empty' "$CONFIG_FILE" 2>/dev/null || true)
         [ -n "$ipv6" ] && GOOGLE_IPV6="$ipv6"
     fi
+
+    return 0
 }
 
 generate_uuid() {
