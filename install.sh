@@ -125,34 +125,50 @@ load_existing_config() {
     fi
 
     log_info "检测到已有配置，将复用未显式指定的参数: ${CONFIG_FILE}"
-    [ -z "$USER_UUID" ] && USER_UUID=$(jq -r '.uuids[0] // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    [ -z "$PRIVATE_KEY" ] && PRIVATE_KEY=$(jq -r '.tls_settings.private_key // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    [ -z "$SHORT_ID" ] && SHORT_ID=$(jq -r '.tls_settings.short_id[0] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    if [ -z "$USER_UUID" ]; then
+        USER_UUID=$(jq -r '.uuids[0] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    fi
+    if [ -z "$PRIVATE_KEY" ]; then
+        PRIVATE_KEY=$(jq -r '.tls_settings.private_key // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    fi
+    if [ -z "$SHORT_ID" ]; then
+        SHORT_ID=$(jq -r '.tls_settings.short_id[0] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    fi
 
     if [ "$PORT_SET" = false ]; then
         local port
         port=$(jq -r '.server_port // empty' "$CONFIG_FILE" 2>/dev/null || true)
-        [ -n "$port" ] && LISTEN_PORT="$port"
+        if [ -n "$port" ]; then
+            LISTEN_PORT="$port"
+        fi
     fi
     if [ "$DOMAIN_SET" = false ]; then
         local domain
         domain=$(jq -r '.tls_settings.server_name // empty' "$CONFIG_FILE" 2>/dev/null || true)
-        [ -n "$domain" ] && DEST_DOMAIN="$domain"
+        if [ -n "$domain" ]; then
+            DEST_DOMAIN="$domain"
+        fi
     fi
     if [ "$MAX_CONN_SET" = false ]; then
         local conn
         conn=$(jq -r '.max_conn_per_ip // empty' "$CONFIG_FILE" 2>/dev/null || true)
-        [ -n "$conn" ] && MAX_CONN="$conn"
+        if [ -n "$conn" ]; then
+            MAX_CONN="$conn"
+        fi
     fi
     if [ "$MAX_CPS_SET" = false ]; then
         local cps
         cps=$(jq -r '.max_new_conn_per_ip_per_min // empty' "$CONFIG_FILE" 2>/dev/null || true)
-        [ -n "$cps" ] && MAX_CPS="$cps"
+        if [ -n "$cps" ]; then
+            MAX_CPS="$cps"
+        fi
     fi
     if [ "$GOOGLE_IPV6_SET" = false ]; then
         local ipv6
         ipv6=$(jq -r '.google_ipv6 // empty' "$CONFIG_FILE" 2>/dev/null || true)
-        [ -n "$ipv6" ] && GOOGLE_IPV6="$ipv6"
+        if [ -n "$ipv6" ]; then
+            GOOGLE_IPV6="$ipv6"
+        fi
     fi
 
     return 0
