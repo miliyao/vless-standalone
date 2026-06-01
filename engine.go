@@ -39,13 +39,13 @@ const (
 	defaultTCPKeepAliveInterval        = 75 * time.Second
 )
 
-// Engine 负责管理底层嵌入式 sing-box 的生命周期与配置重载
+// Engine manages the embedded sing-box lifecycle and config reloads.
 type Engine struct {
 	mu        sync.Mutex
 	instance  *box.Box
 	limiter   *Limiter
 	logger    *zap.Logger
-	activeCfg *Config // 保存当前成功运行的配置，用于回滚
+	activeCfg *Config
 }
 
 func NewEngine(cfg *Config, limiter *Limiter, logger *zap.Logger) *Engine {
@@ -66,7 +66,7 @@ func (e *Engine) Start(cfg *Config) error {
 
 	if err := instance.Start(); err != nil {
 		_ = instance.Close()
-		return fmt.Errorf("启动 sing-box 内核失败: %w", err)
+		return fmt.Errorf("start sing-box core: %w", err)
 	}
 
 	e.instance = instance
@@ -78,44 +78,40 @@ func (e *Engine) Reload(cfg *Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.logger.Info("开始重载配置文件 (注：由于端口独占绑定限制，热重载过程中会有毫秒级的短暂连接中断)...")
+	e.logger.Info("starting config reload; listener rebinding may cause a brief interruption")
 	newInstance, err := e.createBox(cfg)
 	if err != nil {
-		return fmt.Errorf("解析新配置文件失败: %w", err)
+		return fmt.Errorf("build new sing-box config: %w", err)
 	}
 
 	oldInstance := e.instance
 	startTime := time.Now()
 
-	// 1. 先行关闭旧实例释放独占绑定的监听端口
 	if oldInstance != nil {
 		_ = oldInstance.Close()
 	}
 
-	// 2. 启动新实例重新接管监听端口
 	if err := newInstance.Start(); err != nil {
-		e.logger.Error("启动新内核实例失败，尝试拉起旧配置防灾回滚...", zap.Error(err))
+		e.logger.Error("new core instance failed to start; attempting rollback", zap.Error(err))
 		_ = newInstance.Close()
 
-		// 回滚逻辑：使用备份的 activeCfg 重新初始化并启动
 		if e.activeCfg != nil {
 			fallbackInstance, rollbackErr := e.createBox(e.activeCfg)
 			if rollbackErr == nil {
 				if rollbackStartErr := fallbackInstance.Start(); rollbackStartErr == nil {
 					e.instance = fallbackInstance
-					e.logger.Warn("已成功将服务实例回滚至老配置运行，避免了节点瘫痪")
-					return fmt.Errorf("启动新配置失败: %w；已成功回滚至老配置运行", err)
-				} else {
-					_ = fallbackInstance.Close()
+					e.logger.Warn("service rolled back to previous config")
+					return fmt.Errorf("start new config failed: %w; rolled back to previous config", err)
 				}
+				_ = fallbackInstance.Close()
 			}
 		}
-		return fmt.Errorf("启动新配置失败且回滚失败: %w", err)
+		return fmt.Errorf("start new config failed and rollback failed: %w", err)
 	}
 
 	e.instance = newInstance
 	e.activeCfg = cfg
-	e.logger.Info("热重载配置文件完成", zap.Duration("interruption_duration", time.Since(startTime)))
+	e.logger.Info("config reload completed", zap.Duration("interruption_duration", time.Since(startTime)))
 	return nil
 }
 
@@ -143,7 +139,7 @@ func (e *Engine) createBox(cfg *Config) (*box.Box, error) {
 		Options: opts,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("初始化 sing-box 实例失败: %w", err)
+		return nil, fmt.Errorf("initialize sing-box instance: %w", err)
 	}
 
 	router := service.FromContext[adapter.Router](ctx)
@@ -191,7 +187,6 @@ func (e *Engine) buildSingboxOptions(cfg *Config) (option.Options, error) {
 		return option.Options{}, err
 	}
 
-	// 解析匿名用户 UUID 列表并生成用户标识
 	sbUsers := make([]option.VLESSUser, 0, len(cfg.UUIDs))
 	for i, uuid := range cfg.UUIDs {
 		sbUsers = append(sbUsers, option.VLESSUser{
@@ -278,28 +273,21 @@ func (e *Engine) buildRouteOptions() *option.RouteOptions {
 		AutoDetectInterface: true,
 		Final:               directOutboundTag,
 	}
-
-	// 注入安全规则
 	route.Rules = e.defaultSafetyRules()
-
 	return route
 }
 
 func (e *Engine) defaultSafetyRules() []option.Rule {
 	return []option.Rule{
-		// 1. 拦截 BitTorrent (P2P)
 		e.rejectRule(option.RawDefaultRule{
 			Protocol: badoption.Listable[string]{C.ProtocolBitTorrent},
 		}),
-		// 2. 拦截本地和私有 IP (直接路由 direct)
 		e.routeRule(option.RawDefaultRule{
 			IPIsPrivate: true,
 		}),
-		// 3. 拦截 SMTP 发信端口 (防止垃圾邮件)
 		e.rejectRule(option.RawDefaultRule{
 			Port: badoption.Listable[uint16]{25},
 		}),
-		// 4. 拦截常见高危端口 (SMB, RDP, NetBIOS)
 		e.rejectRule(option.RawDefaultRule{
 			Port:      badoption.Listable[uint16]{445, 3389},
 			PortRange: badoption.Listable[string]{"135:139"},
@@ -421,10 +409,10 @@ func (e *Engine) parseRealityDestPort(raw string) (uint16, error) {
 	var port int
 	_, err := fmt.Sscanf(strings.TrimSpace(raw), "%d", &port)
 	if err != nil {
-		return 0, fmt.Errorf("无效的 tls_settings.server_port %q", raw)
+		return 0, fmt.Errorf("invalid tls_settings.server_port %q", raw)
 	}
 	if port < 1 || port > 65535 {
-		return 0, fmt.Errorf("tls_settings.server_port 超出端口范围 [1-65535]: %d", port)
+		return 0, fmt.Errorf("tls_settings.server_port out of range [1-65535]: %d", port)
 	}
 	return uint16(port), nil
 }
@@ -435,7 +423,7 @@ func (e *Engine) resolveListenAddr(raw string) (netip.Addr, error) {
 	}
 	addr, err := netip.ParseAddr(strings.TrimSpace(raw))
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("无效的监听 IP 格式 %q: %w", raw, err)
+		return netip.Addr{}, fmt.Errorf("invalid listen_ip %q: %w", raw, err)
 	}
 	return addr, nil
 }

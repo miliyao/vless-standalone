@@ -1,12 +1,16 @@
-# 编译产物
+# Build artifacts
+dist/
 vless-standalone
 vless-standalone.exe
+vless-standalone-*
+*.sha256
 *.exe
 *.test
 *.out
 
-# Go 缓存与 IDE 目录
+# Go cache and local tooling
 .gocache/
+.gomodcache/
 .idea/
 .vscode/
 .DS_Store

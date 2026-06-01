@@ -21,17 +21,17 @@ type limiterTracker struct {
 	connSequence uint64
 }
 
-// newLimiterTracker 构造基于 IP 的流量劫持与管理 Tracker
+// newLimiterTracker creates an IP-based connection tracker for sing-box.
 func newLimiterTracker(limiter *Limiter, logger *zap.Logger) *limiterTracker {
 	return &limiterTracker{limiter: limiter, logger: logger}
 }
 
-// RoutedConnection 劫持 TCP 连接进行并发和速率拦截
+// RoutedConnection wraps TCP connections and applies concurrency/rate limits.
 func (t *limiterTracker) RoutedConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
 	meta := t.buildConnMeta(metadata)
 	if decision := t.limiter.Acquire(meta, meta.StartedAt); !decision.Allow {
 		if t.logger != nil {
-			t.logger.Warn("TCP 连接请求因 IP 并发超限被拦截",
+			t.logger.Warn("TCP connection rejected by per-IP limiter",
 				zap.String("ip", meta.SourceIP.String()),
 				zap.String("reason", decision.Reason),
 			)
@@ -46,12 +46,11 @@ func (t *limiterTracker) RoutedConnection(ctx context.Context, conn net.Conn, me
 	}
 }
 
-// RoutedPacketConnection 劫持 UDP 连接进行并发和速率拦截并绑定活跃时间追踪
+// RoutedPacketConnection wraps UDP packet connections and tracks activity for idle cleanup.
 func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) N.PacketConn {
 	meta := t.buildConnMeta(metadata)
 	meta.IsUDP = true
 
-	// 初始化 UDP 活跃纳秒时间戳并传入指针
 	lastActive := time.Now().UnixNano()
 	meta.LastActive = &lastActive
 
@@ -61,12 +60,11 @@ func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.Pack
 		meta:       meta,
 		lastActive: &lastActive,
 	}
-	// 绑定主动关闭底层的 CloseFunc，供 Limiter Janitor 定时调用
 	tpc.meta.CloseFunc = tpc.Close
 
 	if decision := t.limiter.Acquire(tpc.meta, meta.StartedAt); !decision.Allow {
 		if t.logger != nil {
-			t.logger.Warn("UDP 报文连接请求因 IP 并发超限被拦截",
+			t.logger.Warn("UDP packet connection rejected by per-IP limiter",
 				zap.String("ip", meta.SourceIP.String()),
 				zap.String("reason", decision.Reason),
 			)
@@ -128,7 +126,7 @@ func (c *trackedPacketConn) Unwrap() any {
 	return c.PacketConn
 }
 
-// FrontHeadroom 暴露底层包的前置预留头部空间，规避 Mux 协议中的 buffer overflow 崩溃 panic
+// FrontHeadroom exposes the wrapped packet connection headroom to avoid mux buffer overflow panics.
 func (c *trackedPacketConn) FrontHeadroom() int {
 	if f, ok := c.PacketConn.(interface{ FrontHeadroom() int }); ok {
 		return f.FrontHeadroom()
@@ -136,7 +134,7 @@ func (c *trackedPacketConn) FrontHeadroom() int {
 	return 0
 }
 
-// RearHeadroom 暴露底层包的后置预留尾部空间
+// RearHeadroom exposes the wrapped packet connection tailroom.
 func (c *trackedPacketConn) RearHeadroom() int {
 	if f, ok := c.PacketConn.(interface{ RearHeadroom() int }); ok {
 		return f.RearHeadroom()

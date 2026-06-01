@@ -7,34 +7,33 @@ import (
 	"time"
 )
 
-// ConnMeta 定义连接元数据，主要包含连接唯一 ID、源 IP 以及 UDP 活跃状态与清理控制
+// ConnMeta describes one tracked connection.
 type ConnMeta struct {
 	ConnID     string
 	SourceIP   netip.Addr
 	StartedAt  time.Time
 	IsUDP      bool
-	LastActive *int64       // 指向以纳秒为单位的 Unix 时间戳指针 (atomic)
-	CloseFunc  func() error // 主动关闭底层的 UDP 报文连接函数
+	LastActive *int64       // Unix timestamp in nanoseconds, updated atomically.
+	CloseFunc  func() error // Actively closes the underlying UDP packet connection.
 }
 
-// LimitDecision 定义限制器的拦截决策结果
+// LimitDecision is the result returned by the limiter.
 type LimitDecision struct {
 	Allow  bool
 	Reason string
 }
 
-// rateLimiter 使用高精度滑动窗口日志算法记录时间戳
+// rateLimiter records timestamps for a sliding-window rate limit.
 type rateLimiter struct {
 	times []time.Time
 }
 
-// allow 使用滑动窗口算法校验新建速率限制
+// allow validates a new-connection rate limit with a sliding window.
 func (rl *rateLimiter) allow(limit int, now time.Time, window time.Duration) bool {
 	if limit <= 0 {
 		return true
 	}
 	cutoff := now.Add(-window)
-	// 清理超出时间窗口的历史记录
 	i := 0
 	for i < len(rl.times) && rl.times[i].Before(cutoff) {
 		i++
@@ -51,23 +50,23 @@ func (rl *rateLimiter) allow(limit int, now time.Time, window time.Duration) boo
 
 const shardCount = 64
 
-// limiterShard 分片锁结构体，减少高并发下的全局锁竞争
+// limiterShard reduces global lock contention under high concurrency.
 type limiterShard struct {
 	mu             sync.RWMutex
 	activeConnByIP map[string]map[string]ConnMeta
 	recentConnByIP map[string]*rateLimiter
 }
 
-// Limiter 提供针对源 IP 维度的并发连接限制与新建连接频率限制，基于分片锁设计
+// Limiter enforces per-source-IP concurrent connection and new-connection limits.
 type Limiter struct {
 	shards [shardCount]*limiterShard
 
 	window          time.Duration
-	maxConnPerIP    int32 // 使用 atomic 读写
-	maxNewConnPerIP int32 // 使用 atomic 读写
+	maxConnPerIP    int32
+	maxNewConnPerIP int32
 }
 
-// fnv32 计算 IP 字符串的 FNV-1a 哈希，以确定分片索引
+// fnv32 calculates an FNV-1a hash for selecting a shard.
 func fnv32(key string) uint32 {
 	hash := uint32(2166136261)
 	const prime = 16777619
@@ -78,13 +77,12 @@ func fnv32(key string) uint32 {
 	return hash
 }
 
-// getShard 获取对应 IP 的分片
 func (l *Limiter) getShard(ipKey string) *limiterShard {
 	idx := fnv32(ipKey) % shardCount
 	return l.shards[idx]
 }
 
-// NewLimiter 构造并初始化 IP 限制器
+// NewLimiter creates a sharded limiter and starts the background cleanup task.
 func NewLimiter(cfg *Config) *Limiter {
 	l := &Limiter{
 		window:          time.Minute,
@@ -99,13 +97,10 @@ func NewLimiter(cfg *Config) *Limiter {
 		}
 	}
 
-	// 启动后台定时任务清理过期的 IP 速率限制器缓存，并主动回收空闲的 UDP 连接
 	go l.runJanitor()
-
 	return l
 }
 
-// runJanitor 运行后台清理和回收任务
 func (l *Limiter) runJanitor() {
 	udpTicker := time.NewTicker(10 * time.Second)
 	cacheTicker := time.NewTicker(5 * time.Minute)
@@ -122,7 +117,7 @@ func (l *Limiter) runJanitor() {
 	}
 }
 
-// cleanupIdleUDP 自动扫描并关闭空闲 30 秒以上的 UDP 连接
+// cleanupIdleUDP closes UDP connections idle for more than 30 seconds.
 func (l *Limiter) cleanupIdleUDP() {
 	now := time.Now().UnixNano()
 	idleTimeout := int64(30 * time.Second)
@@ -144,7 +139,7 @@ func (l *Limiter) cleanupIdleUDP() {
 		}
 		shard.mu.Unlock()
 
-		// 在锁外异步执行 Close，防死锁和长阻塞
+		// Run close callbacks outside the shard lock to avoid lock contention.
 		for _, closeFunc := range toClose {
 			go func(cf func() error) {
 				_ = cf()
@@ -153,7 +148,7 @@ func (l *Limiter) cleanupIdleUDP() {
 	}
 }
 
-// cleanupExpiredCache 定期清理最近 2 分钟无连接记录的 IP 缓存，防内存累积泄露
+// cleanupExpiredCache removes stale IP rate-limit buckets to avoid unbounded growth.
 func (l *Limiter) cleanupExpiredCache() {
 	now := time.Now()
 	for i := 0; i < shardCount; i++ {
@@ -168,13 +163,13 @@ func (l *Limiter) cleanupExpiredCache() {
 	}
 }
 
-// UpdateConfig 动态刷新限制阈值
+// UpdateConfig refreshes limiter thresholds without recreating the limiter.
 func (l *Limiter) UpdateConfig(cfg *Config) {
 	atomic.StoreInt32(&l.maxConnPerIP, int32(cfg.MaxConnPerIP))
 	atomic.StoreInt32(&l.maxNewConnPerIP, int32(cfg.MaxNewConnPerIPPerMin))
 }
 
-// Check 检查源 IP 并发连接数和新建速率限制
+// Check validates per-source-IP concurrency and new-connection limits.
 func (l *Limiter) Check(meta ConnMeta, now time.Time) LimitDecision {
 	return l.checkLocked(meta, now, false)
 }
@@ -186,7 +181,6 @@ func (l *Limiter) Acquire(meta ConnMeta, now time.Time) LimitDecision {
 
 func (l *Limiter) checkLocked(meta ConnMeta, now time.Time, register bool) LimitDecision {
 	if !meta.SourceIP.IsValid() {
-		// 无法获取源 IP 时默认放行，防误杀
 		return LimitDecision{Allow: true}
 	}
 
@@ -199,7 +193,6 @@ func (l *Limiter) checkLocked(meta ConnMeta, now time.Time, register bool) Limit
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	// 1. 校验单 IP 每分钟新建连接数 (滑动窗口)
 	if maxNew > 0 {
 		rl, ok := shard.recentConnByIP[ipKey]
 		if !ok {
@@ -211,7 +204,6 @@ func (l *Limiter) checkLocked(meta ConnMeta, now time.Time, register bool) Limit
 		}
 	}
 
-	// 2. 校验单 IP 最大并发连接数
 	if maxConn > 0 {
 		activeConns := shard.activeConnByIP[ipKey]
 		if len(activeConns) >= int(maxConn) {
@@ -231,7 +223,7 @@ func (l *Limiter) checkLocked(meta ConnMeta, now time.Time, register bool) Limit
 	return LimitDecision{Allow: true}
 }
 
-// Register 登记连接
+// Register tracks a connection.
 func (l *Limiter) Register(meta ConnMeta) {
 	if !meta.SourceIP.IsValid() {
 		return
@@ -251,7 +243,7 @@ func (l *Limiter) Register(meta ConnMeta) {
 	conns[meta.ConnID] = meta
 }
 
-// Unregister 注销连接
+// Unregister stops tracking a connection.
 func (l *Limiter) Unregister(meta ConnMeta) {
 	if !meta.SourceIP.IsValid() {
 		return
@@ -274,10 +266,11 @@ func (l *Limiter) Unregister(meta ConnMeta) {
 	}
 }
 
-// Snapshot 导出节点当前负载统计
+// Snapshot returns current load counters for the status API.
 func (l *Limiter) Snapshot() map[string]interface{} {
 	activeIPs := 0
 	activeConnections := 0
+	activeUDPConnections := 0
 
 	for i := 0; i < shardCount; i++ {
 		shard := l.shards[i]
@@ -285,12 +278,27 @@ func (l *Limiter) Snapshot() map[string]interface{} {
 		activeIPs += len(shard.activeConnByIP)
 		for _, conns := range shard.activeConnByIP {
 			activeConnections += len(conns)
+			for _, meta := range conns {
+				if meta.IsUDP {
+					activeUDPConnections++
+				}
+			}
 		}
 		shard.mu.RUnlock()
 	}
 
 	return map[string]interface{}{
-		"active_ips":         activeIPs,
-		"active_connections": activeConnections,
+		"active_ips":             activeIPs,
+		"active_connections":     activeConnections,
+		"active_udp_connections": activeUDPConnections,
+	}
+}
+
+// Limits returns the active limiter thresholds for diagnostics.
+func (l *Limiter) Limits() map[string]interface{} {
+	return map[string]interface{}{
+		"max_conn_per_ip":             int(atomic.LoadInt32(&l.maxConnPerIP)),
+		"max_new_conn_per_ip_per_min": int(atomic.LoadInt32(&l.maxNewConnPerIP)),
+		"window_seconds":              int(l.window.Seconds()),
 	}
 }
