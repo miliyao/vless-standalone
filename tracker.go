@@ -29,7 +29,7 @@ func newLimiterTracker(limiter *Limiter, logger *zap.Logger) *limiterTracker {
 // RoutedConnection 劫持 TCP 连接进行并发和速率拦截
 func (t *limiterTracker) RoutedConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
 	meta := t.buildConnMeta(metadata)
-	if decision := t.limiter.Check(meta, meta.StartedAt); !decision.Allow {
+	if decision := t.limiter.Acquire(meta, meta.StartedAt); !decision.Allow {
 		if t.logger != nil {
 			t.logger.Warn("TCP 连接请求因 IP 并发超限被拦截",
 				zap.String("ip", meta.SourceIP.String()),
@@ -39,7 +39,6 @@ func (t *limiterTracker) RoutedConnection(ctx context.Context, conn net.Conn, me
 		_ = conn.Close()
 		return conn
 	}
-	t.limiter.Register(meta)
 	return &trackedConn{
 		Conn:    conn,
 		limiter: t.limiter,
@@ -56,7 +55,16 @@ func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.Pack
 	lastActive := time.Now().UnixNano()
 	meta.LastActive = &lastActive
 
-	if decision := t.limiter.Check(meta, meta.StartedAt); !decision.Allow {
+	tpc := &trackedPacketConn{
+		PacketConn: conn,
+		limiter:    t.limiter,
+		meta:       meta,
+		lastActive: &lastActive,
+	}
+	// 绑定主动关闭底层的 CloseFunc，供 Limiter Janitor 定时调用
+	tpc.meta.CloseFunc = tpc.Close
+
+	if decision := t.limiter.Acquire(tpc.meta, meta.StartedAt); !decision.Allow {
 		if t.logger != nil {
 			t.logger.Warn("UDP 报文连接请求因 IP 并发超限被拦截",
 				zap.String("ip", meta.SourceIP.String()),
@@ -67,16 +75,6 @@ func (t *limiterTracker) RoutedPacketConnection(ctx context.Context, conn N.Pack
 		return conn
 	}
 
-	tpc := &trackedPacketConn{
-		PacketConn: conn,
-		limiter:    t.limiter,
-		meta:       meta,
-		lastActive: &lastActive,
-	}
-	// 绑定主动关闭底层的 CloseFunc，供 Limiter Janitor 定时调用
-	tpc.meta.CloseFunc = tpc.Close
-
-	t.limiter.Register(tpc.meta)
 	return tpc
 }
 

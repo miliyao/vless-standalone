@@ -176,6 +176,15 @@ func (l *Limiter) UpdateConfig(cfg *Config) {
 
 // Check 检查源 IP 并发连接数和新建速率限制
 func (l *Limiter) Check(meta ConnMeta, now time.Time) LimitDecision {
+	return l.checkLocked(meta, now, false)
+}
+
+// Acquire atomically checks and registers a connection under the same shard lock.
+func (l *Limiter) Acquire(meta ConnMeta, now time.Time) LimitDecision {
+	return l.checkLocked(meta, now, true)
+}
+
+func (l *Limiter) checkLocked(meta ConnMeta, now time.Time, register bool) LimitDecision {
 	if !meta.SourceIP.IsValid() {
 		// 无法获取源 IP 时默认放行，防误杀
 		return LimitDecision{Allow: true}
@@ -208,6 +217,15 @@ func (l *Limiter) Check(meta ConnMeta, now time.Time) LimitDecision {
 		if len(activeConns) >= int(maxConn) {
 			return LimitDecision{Allow: false, Reason: "active connections per ip limit exceeded"}
 		}
+	}
+
+	if register {
+		conns := shard.activeConnByIP[ipKey]
+		if conns == nil {
+			conns = make(map[string]ConnMeta)
+			shard.activeConnByIP[ipKey] = conns
+		}
+		conns[meta.ConnID] = meta
 	}
 
 	return LimitDecision{Allow: true}

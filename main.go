@@ -103,13 +103,12 @@ func main() {
 				continue
 			}
 
-			// 更新限制器的配置限制阈值
-			limiter.UpdateConfig(newCfg)
-
 			// 重载 sing-box 底层内核监听
 			if err := engine.Reload(newCfg); err != nil {
 				logger.Error("重载内核实例失败", zap.Error(err))
 			} else {
+				// 仅在内核实例成功切换后更新限流阈值，避免回滚时配置不一致。
+				limiter.UpdateConfig(newCfg)
 				logger.Info("热重载成功，用户及核心实例配置已刷新")
 			}
 

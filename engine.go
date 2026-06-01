@@ -41,21 +41,17 @@ const (
 
 // Engine 负责管理底层嵌入式 sing-box 的生命周期与配置重载
 type Engine struct {
-	mu           sync.Mutex
-	instance     *box.Box
-	limiter      *Limiter
-	logger       *zap.Logger
-	googleIPv6   bool
-	clashAPIAddr string
-	activeCfg    *Config // 保存当前成功运行的配置，用于回滚
+	mu        sync.Mutex
+	instance  *box.Box
+	limiter   *Limiter
+	logger    *zap.Logger
+	activeCfg *Config // 保存当前成功运行的配置，用于回滚
 }
 
 func NewEngine(cfg *Config, limiter *Limiter, logger *zap.Logger) *Engine {
 	return &Engine{
-		limiter:      limiter,
-		logger:       logger,
-		googleIPv6:   cfg.GoogleIPv6,
-		clashAPIAddr: cfg.ClashAPIListenAddr,
+		limiter: limiter,
+		logger:  logger,
 	}
 }
 
@@ -261,15 +257,15 @@ func (e *Engine) buildSingboxOptions(cfg *Config) (option.Options, error) {
 		DNS:   e.buildDefaultDNSOptions(),
 	}
 
-	if strings.TrimSpace(e.clashAPIAddr) != "" {
+	if strings.TrimSpace(cfg.ClashAPIListenAddr) != "" {
 		opts.Experimental = &option.ExperimentalOptions{
 			ClashAPI: &option.ClashAPIOptions{
-				ExternalController: strings.TrimSpace(e.clashAPIAddr),
+				ExternalController: strings.TrimSpace(cfg.ClashAPIListenAddr),
 			},
 		}
 	}
 
-	if e.googleIPv6 {
+	if cfg.GoogleIPv6 {
 		opts.Outbounds = append(opts.Outbounds, e.googleIPv6Outbound())
 		opts.Route.Rules = append(opts.Route.Rules, e.googleIPv6Rule())
 	}

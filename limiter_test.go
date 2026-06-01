@@ -178,6 +178,41 @@ func TestConcurrent_RegisterUnregister(t *testing.T) {
 	wg.Wait()
 }
 
+func TestAcquire_AtomicUnderConcurrency(t *testing.T) {
+	cfg := &Config{
+		MaxConnPerIP:          1,
+		MaxNewConnPerIPPerMin: 0,
+	}
+	limiter := NewLimiter(cfg)
+
+	ip := netip.MustParseAddr("192.168.1.1")
+	now := time.Now()
+
+	const workers = 32
+	var wg sync.WaitGroup
+	var allowed int32
+
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(i int) {
+			defer wg.Done()
+			meta := ConnMeta{
+				ConnID:    fmt.Sprintf("conn-%d", i),
+				SourceIP:  ip,
+				StartedAt: now,
+			}
+			if limiter.Acquire(meta, now).Allow {
+				atomic.AddInt32(&allowed, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if allowed != 1 {
+		t.Fatalf("expected exactly 1 acquired connection, got %d", allowed)
+	}
+}
+
 func TestSnapshot_ReadLock(t *testing.T) {
 	cfg := &Config{
 		MaxConnPerIP:          100,
@@ -259,7 +294,7 @@ func TestCheck_UDPIdleJanitor(t *testing.T) {
 		StartedAt:  now,
 		IsUDP:      true,
 		LastActive: &lastActive,
-		CloseFunc:  func() error {
+		CloseFunc: func() error {
 			mu.Lock()
 			closed = true
 			mu.Unlock()
